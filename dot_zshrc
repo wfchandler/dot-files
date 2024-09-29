@@ -1,0 +1,265 @@
+#####################
+# Git status function
+#####################
+
+# List git branch, tag, or ref
+check_git_ref() {
+  # Is this a git repo?
+  if ! git_dir="$(git rev-parse --git-dir 2>/dev/null)"; then
+    return 0
+  fi
+
+  head="$(< ${git_dir}/HEAD)"
+
+  if [[ ${head:0:4} = ref: ]]; then
+    # We're on a branch, probably
+    output="$(git branch --show-current)"
+  else
+    # We may be on a tag
+    output="$(git tag --points-at HEAD)"
+  fi
+
+  if [[ -z ${output} ]]; then
+    # If neither branch nor tag, print first 8 characters of ref
+    echo "${head:0:8}"
+  else
+    echo "${output}"
+  fi
+}
+
+# Check if the index is dirty. Untracked files are not considered.
+check_git_index_dirty() {
+  # Is this a git worktree?
+  in_worktree=$(git rev-parse --is-inside-work-tree 2>/dev/null)
+  if [[ ${in_worktree} != "true" ]] then
+    return 0
+  fi
+
+  if ! git diff-index --exit-code HEAD &>/dev/null; then
+      printf '\U1f6a7\n' # 🚧
+  fi
+}
+
+# Add precmd to get git ref name and check index status.
+git_precmd() {
+  psvar[1]="$(check_git_ref)"
+  psvar[2]="$(check_git_index_dirty)"
+}
+
+###########################
+# Command duration function
+###########################
+
+function elapsed_preexec() {
+  preexec_realtime=${EPOCHREALTIME}
+}
+
+function elapsed_precmd() {
+    if (( preexec_realtime )); then
+        local -rF elapsed_realtime=$(( EPOCHREALTIME - preexec_realtime ))
+        local -ri elapsed_s=${elapsed_realtime}
+
+        local -rF sec=$(( elapsed_realtime%60 ))
+        local -ri min=$(( (elapsed_s/60)%60 ))
+        local -ri hr=$(( elapsed_s/3600 ))
+
+        if (( hr > 0 )); then
+          printf -v prompt_elapsed_time '%ih%im' ${hr} ${min}
+        elif (( min > 0 )); then
+          printf -v prompt_elapsed_time '%im%is' ${min} ${sec}
+        elif (( sec >= 10 )); then
+          printf -v prompt_elapsed_time '%.2fs' ${sec} # 12.34s
+        elif (( sec >= 1 )); then
+          printf -v prompt_elapsed_time '%.3fs' ${sec} # 1.234s
+        else
+          printf -v prompt_elapsed_time '%ims' $(( sec*1000 ))
+        fi
+        unset preexec_realtime
+    else
+        unset prompt_elapsed_time
+    fi
+}
+
+############
+# Tool Setup
+############
+
+# Required for $EPOCHREALTIME
+zmodload zsh/datetime
+
+# Run git_precmd before every interactive command
+autoload -Uz add-zsh-hook
+add-zsh-hook preexec elapsed_preexec
+add-zsh-hook precmd git_precmd
+add-zsh-hook precmd elapsed_precmd
+
+# Load modules from sheldon
+eval "$(sheldon source)"
+
+########
+# Prompt
+########
+
+# %(<COND>.<TRUE_STMT>.<FALSE_STMT>)    - ternary expression
+# %F{<COLOR>}...%f                      - colorize text
+# %(?..?%?)                             - if exit ok then nothing, else print '?<RETURN_CODE>'
+# %*                                    - current 24-hour time with seconds
+# %~                                    - print $PWD with leading ~ if in $HOME
+# %(1j.+%j)                             - if number of jobs > 1 then print '+<COUNT>'
+# %(1v.%1v.)                             - if $psvar[1] is set and not empty then print
+# %#                                    - sudo-aware prompt character
+NEWLINE=$'\n'
+PROMPT="%(?..%F{red}?%?%f${NEWLINE})%F{green}%~%f%(1V.%F{blue} %1v%f.)%(2V. %2v.)${NEWLINE}%(1j.%F{blue}+%j%f .)%# "
+RPROMPT='%F{green}${prompt_elapsed_time}%f %*'
+
+# Have built-in time will show memory and faults
+TIMEFMT=$'\nreal\t%*E\nuser\t%*U\nsys\t%*S\nmaxmem\t%M KiB\nmajflt\t%F'
+
+############
+# Zsh Config
+############
+
+# AUTO_PUSHD                - Push directories to stack automatically
+# COMPLETE_ALIASES          - Allow original command autocompletion for aliases
+# EXTENDED_HISTORY          - Include start time and duration in history
+# INC_APPEND_HISTORY_TIME   - Append commands to history file immediately, instead of on shell exit
+# INTERACTIVE_COMMENTS      - Treat '#' as a comment in interactive shell
+# HIST_IGNORE_DUPS          - Don't include command more than once in search results
+# HIST_IGNORE_SPACE         - Don't include commands with leading spaces in history
+# PIPE_FAIL                 - Show exit status of first process to fail in pipe
+# PROMPT_SUBST              - Allow substitution in $PROMPT
+setopt AUTO_PUSHD COMPLETE_ALIASES EXTENDED_HISTORY INC_APPEND_HISTORY_TIME HIST_IGNORE_DUPS \
+    HIST_IGNORE_SPACE INTERACTIVE_COMMENTS PIPE_FAIL PROMPT_SUBST
+
+# Use emacs keymap
+bindkey -e
+
+# Bind up and down to history-substring-search
+bindkey '^[[A' history-substring-search-up
+bindkey '^[[B' history-substring-search-down
+
+# Un-alias run-help from man and use zsh builtin
+# Silence output as this may fail if alias is not present
+unalias run-help &> /dev/null
+autoload run-help
+
+# Edit command in $EDITOR
+autoload -z edit-command-line
+zle -N edit-command-line
+bindkey "^X^E" edit-command-line
+
+# Only refresh completions once every 24 hours
+autoload -Uz compinit 
+if [[ -n ${ZDOTDIR}/.zcompdump(#qN.mh+24) ]]; then
+	compinit;
+else
+	compinit -C;
+fi;
+
+#########
+# Aliases
+#########
+
+OS_NAME=$(uname)
+
+if [[ ${UNAME} = "Darwin" ]]; then
+    # Enable MacVim in the terminal
+    alias mvim='/Applications/MacVim.app/Contents/bin/mvim'
+fi
+
+# Convenient abbreviations
+
+alias h='fc -dl'
+alias m="$PAGER"
+
+alias l='ls -FG'
+alias ll='ls -oaFhG'
+alias ldot='ls -ld .*'
+
+alias dud='du -d 1 -h'
+
+# Safety first
+alias rm='rm -i'
+alias cp='cp -i'
+alias mv='mv -i'
+
+# GCP convenience commands
+alias gcp-vm='gcloud compute instances'
+alias gcp-ssh='TERM=xterm-256color gcloud compute ssh'
+alias gcp-scp='TERM=xterm-256color gcloud compute scp'
+
+# Get public ip address
+if hash dig 2>/dev/null; then
+    alias ip_address='dig +short myip.opendns.com @resolver1.opendns.com'
+fi
+
+# Kitty image viewer
+alias icat="kitty +kitten icat"
+
+# Kitty diff
+alias d="kitty +kitten diff"
+
+alias gitml='neomutt -f ~/Mail/wfc/Git'
+alias gitp='neomutt -f ~/devel/git.d/patches'
+
+###########
+# Functions
+###########
+
+# Load rg results directly into nvim
+function vg() {
+    nvim +copen -q <(rg --vimgrep --column --no-heading "${@:?No pattern provided.}")
+}
+
+# cd to parent directory of file
+function cdf() {
+    cd "$(dirname $1)"
+}
+
+# Search GitLab while exclusing specs
+function rggl()
+{
+    rg -g '!**spec**' -t ruby "$@"
+}
+#
+# Search Gitaly while exclusing test
+function rggt()
+{
+    rg -g '!**_test.go' -t go "$@"
+}
+
+# Open files
+function fdgl()
+{
+    fd "$@" -E 'spec'
+}
+
+# View single commit in kitty diff
+function kdiff()
+{
+    git difftool --no-symlinks --dir-diff "${1}^!"
+}
+
+# Convert hex to decimal
+function hextod()
+{
+    printf "%d\n" "$@"
+}
+
+# Emacs in terminal
+function e()
+{
+	emacsclient -t "$@"
+}
+
+# Emacs in GUI
+function ec()
+{
+	emacsclient -c -a emacs "$@" >/dev/null 2>&1
+}
+
+
+# Don't user pager for apropos
+apropos() {
+  PAGER='' command apropos "$@"
+}
